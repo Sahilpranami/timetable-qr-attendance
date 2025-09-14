@@ -5,9 +5,12 @@ import os
 from datetime import datetime
 
 app = Flask(__name__)
-app.secret_key = 'secret-key'  # for sessions
+app.secret_key = 'secret-key'
 
-DB_NAME = 'attendance.db'
+# ---------- Paths safe for Render ----------
+DB_NAME = os.path.join('/tmp', 'attendance.db')
+QR_DIR = os.path.join('/tmp', 'qrcodes')
+os.makedirs(QR_DIR, exist_ok=True)
 
 # ---------- Database Setup ----------
 def init_db():
@@ -50,6 +53,9 @@ def init_db():
     conn.commit()
     conn.close()
 
+# Initialize DB (Render-safe)
+init_db()
+
 # ---------- Utility ----------
 def query_db(query, args=(), one=False):
     conn = sqlite3.connect(DB_NAME)
@@ -62,31 +68,30 @@ def query_db(query, args=(), one=False):
 
 # ---------- QR Code Generation ----------
 def generate_qr_for_classrooms():
-    os.makedirs('static/qrcodes', exist_ok=True)
     classrooms = query_db("SELECT * FROM classroom")
     for c in classrooms:
         qr_data = f"Classroom:{c[1]}"
         img = qrcode.make(qr_data)
-        img.save(f"static/qrcodes/{c[1]}.png")
+        img.save(os.path.join(QR_DIR, f"{c[1]}.png"))
 
 # ---------- Routes ----------
 @app.route('/')
 def index():
     return render_template('index.html')
 
-@app.route('/login', methods=['GET', 'POST'])
+@app.route('/login', methods=['GET','POST'])
 def login():
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
-        user = query_db("SELECT * FROM faculty WHERE username=? AND password=?", (username, password), one=True)
+        user = query_db("SELECT * FROM faculty WHERE username=? AND password=?", (username,password), one=True)
         if user:
-            session['user'] = {'id': user[0], 'name': user[1], 'role': user[3], 'dept': user[2]}
-            if user[3] == 'faculty':
+            session['user'] = {'id': user[0],'name': user[1],'role': user[3],'dept': user[2]}
+            if user[3]=='faculty':
                 return redirect(url_for('faculty_dashboard'))
-            elif user[3] == 'hod':
+            elif user[3]=='hod':
                 return redirect(url_for('hod_dashboard'))
-            elif user[3] == 'dean':
+            elif user[3]=='dean':
                 return redirect(url_for('dean_dashboard'))
     return render_template('login.html')
 
@@ -100,7 +105,7 @@ def logout():
 def faculty_dashboard():
     if 'user' not in session or session['user']['role'] != 'faculty':
         return redirect(url_for('login'))
-    logs = query_db("SELECT * FROM attendance WHERE faculty_id=?", (session['user']['id'],))
+    logs = query_db("SELECT a.id, a.faculty_id, c.name, a.timestamp, a.status FROM attendance a JOIN classroom c ON a.classroom_id=c.id WHERE a.faculty_id=?", (session['user']['id'],))
     return render_template('faculty.html', logs=logs)
 
 @app.route('/scan/<classroom_name>')
@@ -110,7 +115,8 @@ def scan(classroom_name):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     classroom = query_db("SELECT * FROM classroom WHERE name=?", (classroom_name,), one=True)
     status = "Present"
-    query_db("INSERT INTO attendance(faculty_id, classroom_id, timestamp, status) VALUES(?,?,?,?)", (session['user']['id'], classroom[0], now, status))
+    query_db("INSERT INTO attendance(faculty_id,classroom_id,timestamp,status) VALUES (?,?,?,?)",
+             (session['user']['id'], classroom[0], now, status))
     return redirect(url_for('faculty_dashboard'))
 
 # ---------- HOD Dashboard ----------
@@ -133,7 +139,6 @@ def dean_dashboard():
 # ---------- Seed Data ----------
 @app.route('/init')
 def init():
-    init_db()
     query_db("INSERT OR IGNORE INTO faculty(name, department, role, username, password) VALUES('Prof. A','CSE','faculty','a','123')")
     query_db("INSERT OR IGNORE INTO faculty(name, department, role, username, password) VALUES('Prof. B','CSE','faculty','b','123')")
     query_db("INSERT OR IGNORE INTO faculty(name, department, role, username, password) VALUES('Dr. HOD','CSE','hod','hod','123')")
@@ -144,8 +149,8 @@ def init():
 
     generate_qr_for_classrooms()
 
-    return "Database initialized and QR codes generated. Go to http://127.0.0.1:5000/login"
+    return "Database initialized and QR codes generated."
 
-if __name__ == '__main__':
-    init_db()
-    app.run(debug=True, host='0.0.0.0', port=5000)
+# ---------- No app.run() for Render ----------
+# Everything is handled by Gunicorn via Procfile
+
